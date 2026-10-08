@@ -72,6 +72,26 @@ o que o lint já barra** — se uma convenção nova precisa valer, ela nasce em
    precisa repetir, linke.
 9. **Nada de stub.** Arquivo vazio para fase futura é dívida que parece entrega.
 
+## Contexto é recurso
+
+`.claude/hooks/higiene.mjs` já recusa leitura de arquivo grande sem recorte — **não repita
+isso aqui**, pela mesma razão que não se repete o que o lint barra. Sobra o que depende de
+julgamento:
+
+1. **Corte a saída na origem:** `| tail -30`, `--stat`, `-q`. Teste e build despejam milhares
+   de linhas, e elas voltam em toda requisição seguinte da sessão — não só na que as pediu.
+2. **Saída grande vai para arquivo**, e você lê a fatia que importa.
+3. **Screenshot só quando o visual é o objetivo.** Cada um custa ~78 mil tokens, mais que
+   todos os `.md` deste repo somados. Para verificar comportamento, use asserção ou o texto
+   do DOM.
+4. **Contexto estourado é motivo para fechar**, não para continuar com cuidado. O hook de
+   `Stop` avisa uma vez ao cruzar 200 mil; `/fechar` e `/clear` retomam sem perder o fio.
+5. **Busca ampla vai para o subagente `explorador`** — ele lê e não escreve por definição
+   (`Read`, `Grep`, `Glob`), varre na janela dele e te devolve a conclusão. Medido: subagente
+   devolve ~290 tokens onde um `Read` devolve ~3.142. **Escrever é sempre da thread
+   principal:** quem escreve precisa ter visto as decisões que levaram até ali, e o subagente
+   não viu.
+
 ## Ponteiros
 
 - **Produto e domínio:** `docs/contexto.md` · **Regras:** `docs/negocio/` · **Decisões:**

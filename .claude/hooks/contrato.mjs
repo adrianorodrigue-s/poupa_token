@@ -16,7 +16,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 
-import { montar, raizDoProjeto } from "./estado.mjs";
+import { TETO_INDICE_DECISOES, montar, raizDoProjeto } from "./estado.mjs";
 
 const TIPOS_QUE_EXIGEM_SPEC = new Set(["feature", "release"]);
 
@@ -116,6 +116,35 @@ function achados(estado, raiz) {
       }
     } catch {
       /* spec ilegível já foi reportada em outro ponto */
+    }
+  }
+
+  // 8. Saúde do registro de decisões. O índice é derivado dos arquivos, então
+  //    não pode divergir — mas o CONTEÚDO ainda pode apodrecer: supersessão
+  //    apontando para ADR que não existe é referência zumbi, e decisão sem data
+  //    não ordena (supersessão sem tempo não diz qual veio depois).
+  const decisoes = estado.decisoes;
+  if (decisoes?.total) {
+    for (const quebrada of decisoes.supersessaoQuebrada) {
+      erros.push({
+        regra: "supersessao-quebrada",
+        mensagem: `ADR-${quebrada.numero} diz ter sido substituído por ADR-${quebrada.apontaPara}, que não existe em docs/adr/.`,
+        proximoPasso: `Corrija o Status do ADR-${quebrada.numero} para o número certo, ou escreva o ADR-${quebrada.apontaPara} que falta.`,
+      });
+    }
+    if (decisoes.semData.length) {
+      avisos.push({
+        regra: "decisao-sem-data",
+        mensagem: `ADR sem data no Status: ${decisoes.semData.join(", ")}.`,
+        proximoPasso: "Acrescente a data na linha **Status:** (ex.: `**Status:** Aceito · 2026-10-08`) — sem ela não dá para saber qual decisão veio depois.",
+      });
+    }
+    if (decisoes.tokens > TETO_INDICE_DECISOES) {
+      avisos.push({
+        regra: "indice-de-decisoes-acima-do-teto",
+        mensagem: `O índice de decisões tem ~${decisoes.tokens} tokens, acima do teto de ${TETO_INDICE_DECISOES}: o hook passou a mandar só o ponteiro.`,
+        proximoPasso: "Pode: marque como superados os ADRs que já não valem (Status `Substituído por ADR-NNNN`) — decisão superada sai do índice sem perder a história.",
+      });
     }
   }
 

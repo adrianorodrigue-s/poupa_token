@@ -35,6 +35,49 @@ calculado na hora por hook; o .md guarda só intenção, decisão e dívida.
 | D17 | `.github/workflows/pr.yml` entra como **entrega separada**, com ADR próprio | Furo do boilerplate: hoje PR não tem check nenhum (sonar só em `dev`, deploy só em `main`) |
 | D18 | Resultado de CI é **lido**, nunca escrito por bot | Decorrência de D4: bot não escreve em arquivo fora do git. Se precisar de status de deploy persistido, revisitar |
 
+## Decisões de economia de contexto (2026-10-08)
+
+Vieram de **medição**, não de hipótese: 32 sessões reais (`~/.claude/projects/*.jsonl`,
+17,8 mil requisições) do autor. O diagnóstico completo está em
+[`economia-de-token.md`](./economia-de-token.md); o porquê de cada uma, em
+`modelo/docs/adr/0013`–`0018`.
+
+O achado que reposiciona o kit: encolher `CLAUDE.md` + `AGENTS.md` de 12.653 para 5.075 bytes
+(a **D11**) vale **0,3%** do gasto. O custo real é releitura de contexto — 61,4% do total, com
+363 mil tokens relidos por requisição. **D4, D5 e D12 não valem por encolher markdown: valem
+por tornar o `/clear` barato.** Fechar cedo é o único lever de ordem de grandeza, porque o
+custo de uma sessão é a soma do contexto em cada requisição, e cresce com o quadrado do
+tamanho dela.
+
+| # | Decisão | Consequência |
+|---|---|---|
+| D19 | **Modelo de custo oficial**: nº de requisições · o que entra e nunca sai · estabilidade do prefixo. Todo item do kit declara qual deles ataca | Item que não ataca nenhum não entra |
+| D20 | **Orçamento de 200 mil tokens de contexto**, avisado em tempo real pelo hook `Stop`/`PreCompact`, uma vez por sessão, via `systemMessage` | Avisa enquanto ainda dá para agir. Bloquear no `/fechar` puniria sem economizar — ADR-0013 |
+| D21 | **Recuperação semântica adotável, não instalada** pelo kit (Serena/MCP) | Gate verificado: tool search é padrão, logo as definições de MCP não entram no prefixo. `doctor` checa — ADR-0017 |
+| D22 | **Registro de decisões sobre `docs/adr/`**, não em arquivo novo | Um `docs/decisoes.md` paralelo duplicaria imutabilidade, supersessão e status que o ADR já tem |
+| D23 | **Supersessão com data** (`Substituído por ADR-NNNN · AAAA-MM-DD`); superado sai do índice, não do repo | Do `invalid_at` do Graphiti. Sem data não se sabe qual decisão veio depois |
+| D24 | **Índice de decisões derivado dos arquivos** e injetado pelo hook (~16 tok por decisão); corpo sob demanda | Índice escrito à mão diverge e mente; derivado, não pode — ADR-0015 |
+| D25 | **Teto de 1.200 tokens no índice.** Acima dele o hook manda o ponteiro e o contrato avisa para podar | O teto dá função à poda: é o que mantém o índice injetado |
+| D26 | **Escrita no momento da decisão** (checkpoint), não no fim da sessão | Reforça D12: sessão interrompida não perde a intenção |
+| D27 | **Subagente lê e busca; a thread principal escreve** — por `tools`, não por instrução | Síntese Anthropic × Cognition: isolamento vale para leitura e quebra para escrita — ADR-0016 |
+| D28 | **Higiene de contexto por construção**: `higiene.mjs` recusa leitura sem recorte acima de 40 KB, em `Read` **e** em `Bash` | Regra em `.md` é o mecanismo mais fraco que existe — ADR-0014 |
+| D29 | **Dado volátil entra tarde** (append), nunca no prefixo estável | Lição de KV-cache da Manus |
+
+**D11 fica rebaixada por D19:** encolher o `CLAUDE.md` segue valendo por clareza e por
+*context rot*, mas **não é economia de token** e não justifica prioridade.
+
+### O que explicitamente não construímos
+
+Condenser próprio (o `/compact` nativo já faz), repo map próprio (o Aider provou o padrão e o
+Serena resolve), grafo temporal como serviço (vira infra para manter), e encolher `.md` como
+objetivo.
+
+### Como se verifica
+
+`node .claude/hooks/custo.mjs` lê os transcripts e mede. Linha de base de 2026-10-08: **362
+mil tokens de contexto médio por requisição**, prefixo mediano de **41 mil** respondendo por
+**10,3%** de toda a releitura.
+
 ## Estrutura alvo
 
 ```
@@ -47,9 +90,12 @@ docs/
   features/<resp>/NNNN-*.md    ← spec É o estado da feature
 .claude/
   VERSION                      ← kit:sync compara contra o boilerplate
-  settings.json                ← SessionStart · Stop · PreCompact
-  hooks/estado.mjs             ← deriva .claude/.cache/state.json
+  settings.json                ← PreToolUse · SessionStart · Stop · PreCompact
+  hooks/estado.mjs             ← deriva .claude/.cache/state.json e o índice de decisões
   hooks/contrato.mjs           ← validação chamada por /fechar e pre-push
+  hooks/higiene.mjs            ← PreToolUse: recusa leitura sem recorte (D28)
+  hooks/custo.mjs              ← medidor de gasto, chamada manual (D19)
+  agents/{explorador,revisor}  ← leem e não escrevem, por `tools` (D27)
   commands/{feature,quality-check,revisar,fechar}.md
   skills/{grilling,grill-regra-negocio,documentar-regra-negocio,revisao-codigo,
           criar-testes,camada-ui,camada-db,next16}/

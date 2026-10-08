@@ -33,6 +33,22 @@ export const CAMADAS = ["prisma", "service", "controller", "route", "ui", "teste
 
 const MAX_ITENS = 10;
 
+// Orçamento de contexto por sessão (E1 / D20). O custo de uma sessão não é o
+// tamanho do contexto: é a SOMA dele em cada requisição. Um resultado de N
+// tokens que entra na requisição k é recobrado em todas as seguintes — o custo
+// cresce com o quadrado do tamanho da sessão. Medido em 32 sessões reais deste
+// usuário: 363k de contexto médio por requisição e 61% do custo só em
+// releitura. O limite abaixo não é técnico (a janela comporta muito mais): é o
+// ponto em que fechar e recomeçar passa a custar menos que continuar, e em que
+// o context rot já degrada a resposta. Ver docs/economia-de-token.md.
+const LIMITE_CONTEXTO = 200_000;
+
+// Teto do índice de decisões injetado a cada sessão. Acima disso o hook manda o
+// ponteiro em vez da lista: índice sem teto cresce até ninguém ler — é assim que
+// um memory bank de markdown morre, com o texto ainda lá e já sem efeito.
+// Ver ADR-0015.
+export const TETO_INDICE_DECISOES = 1_200;
+
 function escrever(texto) {
   process.stdout.write(`${texto}\n`);
 }
@@ -251,6 +267,53 @@ function lerCI(raiz, branch) {
 
 // --- montagem ---------------------------------------------------------------
 
+// Índice de decisões DERIVADO dos arquivos de ADR, nunca de uma lista mantida à
+// mão: índice escrito à mão diverge dos arquivos e passa a mentir sem que
+// ninguém perceba (mesma razão da D4). O título é o índice; o corpo se lê sob
+// demanda — a disclosure em três níveis das Skills, aplicada ao histórico.
+export function lerDecisoes(raiz) {
+  const pasta = join(raiz, "docs", "adr");
+  const vazio = { total: 0, vigentes: [], superadas: 0, semData: [], supersessaoQuebrada: [], tokens: 0 };
+  let nomes;
+  try {
+    nomes = readdirSync(pasta).filter((n) => /^\d{4}-.*\.md$/.test(n)).sort();
+  } catch {
+    return vazio; // projeto sem docs/adr/: nada a dizer
+  }
+
+  const numeros = new Set(nomes.map((n) => n.slice(0, 4)));
+  const resultado = { ...vazio, total: nomes.length };
+
+  for (const nome of nomes) {
+    const numero = nome.slice(0, 4);
+    let texto;
+    try {
+      texto = readFileSync(join(pasta, nome), "utf8");
+    } catch {
+      continue;
+    }
+    const titulo = (texto.match(/^#\s*ADR\s*\d{4}\s*[—-]\s*(.+)$/m)?.[1] ?? nome).trim();
+    const linhaStatus = texto.match(/^\*\*Status:\*\*\s*(.+)$/m)?.[1] ?? "";
+    const data = linhaStatus.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? null;
+    const substituidoPor = linhaStatus.match(/ADR[\s-]*(\d{4})/i)?.[1] ?? null;
+
+    if (!data) resultado.semData.push(numero);
+    if (substituidoPor) {
+      resultado.superadas += 1;
+      if (!numeros.has(substituidoPor)) resultado.supersessaoQuebrada.push({ numero, apontaPara: substituidoPor });
+      continue; // decisão superada sai do índice: o que vale é a que a substituiu
+    }
+    resultado.vigentes.push({ numero, titulo, data });
+  }
+
+  // chars/3.7, a mesma aproximação do custo.mjs: serve para decidir se injeta,
+  // não para cobrar nada.
+  resultado.tokens = Math.round(
+    resultado.vigentes.reduce((a, d) => a + d.numero.length + d.titulo.length + 3, 0) / 3.7,
+  );
+  return resultado;
+}
+
 export function montar(raiz, origem) {
   const branch = lerBranch(raiz);
   const { ref, mergeBase } = base(raiz);
@@ -268,6 +331,7 @@ export function montar(raiz, origem) {
     camadasTocadas: camadasDe(arquivos.todos),
     spec: lerSpec(raiz, branch),
     ci: lerCI(raiz, branch),
+    decisoes: lerDecisoes(raiz),
   };
 }
 
@@ -299,6 +363,21 @@ function relatorio(e) {
   l.push(`- árvore de trabalho: ${pend.length} alteração(ões) não commitada(s)${pend.length ? ` — ${pend.slice(0, MAX_ITENS).join("; ")}${pend.length > MAX_ITENS ? "; …" : ""}` : ""}`);
   if (e.commits.length) l.push(`- commits desta branch: ${e.commits.slice(0, MAX_ITENS).join(" · ")}${e.commits.length > MAX_ITENS ? " · …" : ""}`);
   l.push(`- CI: ${e.ci.estado}${e.ci.workflow ? ` (${e.ci.workflow})` : ""}${e.ci.motivo ? ` — ${e.ci.motivo}` : ""}`);
+  if (e.decisoes?.total) {
+    const d = e.decisoes;
+    const extra = d.superadas ? ` (+${d.superadas} superada${d.superadas > 1 ? "s" : ""})` : "";
+    if (d.tokens <= TETO_INDICE_DECISOES) {
+      l.push(
+        `- decisões vigentes em docs/adr/${extra}, corpo sob demanda: ` +
+          d.vigentes.map((x) => `${x.numero} ${x.titulo}`).join(" · "),
+      );
+    } else {
+      l.push(
+        `- decisões: ${d.vigentes.length} vigentes em docs/adr/${extra} — índice acima do teto de ` +
+          `${TETO_INDICE_DECISOES} tokens; leia a pasta quando a tarefa tocar uma decisão`,
+      );
+    }
+  }
   l.push(`- checkpoint: ${e.checkpoint ? `${e.checkpoint.quando} — ${e.checkpoint.resumo}` : "nenhum nesta máquina"}`);
   return l.join("\n");
 }
@@ -331,11 +410,21 @@ function salvarCache(raiz, estado) {
 // cada parada encheria o diff de ruído. O que atravessa máquina é a spec, que o
 // /fechar atualiza. Aqui só se guarda o suficiente para retomar depois de um
 // /clear ou de uma sessão morta na mesma máquina.
-function resumoDaTranscricao(entrada) {
+function linhasDaTranscricao(entrada) {
   const caminho = entrada?.transcript_path;
   if (!caminho || !existsSync(caminho)) return null;
   try {
-    const linhasArquivo = readFileSync(caminho, "utf8").split("\n").filter(Boolean);
+    return readFileSync(caminho, "utf8").split("\n").filter(Boolean);
+  } catch {
+    return null; // sem permissão ou formato mudou: segue sem transcrição
+  }
+}
+
+// Lê uma vez, serve os dois usos (resumo e orçamento): a transcrição de uma
+// sessão longa passa de 1 MB e este hook roda a cada parada.
+function resumoDaTranscricao(linhasArquivo) {
+  if (!linhasArquivo) return null;
+  try {
     for (let i = linhasArquivo.length - 1; i >= 0; i -= 1) {
       const evento = JSON.parse(linhasArquivo[i]);
       const conteudo = evento?.message?.content;
@@ -347,6 +436,69 @@ function resumoDaTranscricao(entrada) {
     /* formato de transcrição mudou: segue sem resumo */
   }
   return null;
+}
+
+// O que foi cobrado como ENTRADA em cada requisição é o contexto inteiro
+// daquele momento — lido do cache ou gravado nele. Requisição de subagente
+// (isSidechain) roda em janela própria e não pesa na thread principal, então
+// não conta aqui.
+function orcamentoDaTranscricao(linhasArquivo) {
+  if (!linhasArquivo) return null;
+  let atual = 0;
+  let pico = 0;
+  let requisicoes = 0;
+  for (const linha of linhasArquivo) {
+    let evento;
+    try {
+      evento = JSON.parse(linha);
+    } catch {
+      continue;
+    }
+    if (evento?.isSidechain === true) continue;
+    const uso = evento?.message?.usage;
+    if (!uso) continue;
+    const contexto =
+      (uso.cache_read_input_tokens ?? 0) + (uso.cache_creation_input_tokens ?? 0) + (uso.input_tokens ?? 0);
+    // A transcrição guarda eventos de `usage` com tudo zerado (12 em 4.037 numa
+    // sessão real) — são marcadores, não requisições: nenhuma releitura de
+    // contexto aconteceu. Contá-los faria a última parada reportar "0 tokens".
+    if (contexto === 0) continue;
+    requisicoes += 1;
+    atual = contexto;
+    if (contexto > pico) pico = contexto;
+  }
+  return requisicoes ? { atual, pico, requisicoes } : null;
+}
+
+function mil(n) {
+  return n.toLocaleString("pt-BR");
+}
+
+// Avisa UMA vez por sessão, ao cruzar o limite. Alarme repetido a cada parada
+// vira ruído e para de ser lido — que é exatamente como um memory bank de
+// markdown morre.
+function avisoDeOrcamento(estado, linhasArquivo, entrada, anterior) {
+  const uso = orcamentoDaTranscricao(linhasArquivo);
+  if (!uso) return null;
+
+  const sessao = entrada?.session_id ?? null;
+  estado.orcamento = { sessao, atual: uso.atual, pico: uso.pico, requisicoes: uso.requisicoes };
+
+  const avisoAnterior = anterior?.orcamento;
+  if (avisoAnterior?.avisadoEm && avisoAnterior.sessao === sessao) {
+    estado.orcamento.avisadoEm = avisoAnterior.avisadoEm; // já avisou nesta sessão
+    return null;
+  }
+  if (uso.pico <= LIMITE_CONTEXTO) return null;
+
+  estado.orcamento.avisadoEm = new Date().toISOString();
+  return (
+    `Orçamento de contexto estourado: ${mil(uso.atual)} tokens na última requisição ` +
+    `(limite ${mil(LIMITE_CONTEXTO)}), em ${uso.requisicoes} requisições nesta sessão. ` +
+    "Cada resultado novo volta em todas as requisições seguintes, então daqui em diante " +
+    "continuar custa mais que recomeçar — e o contexto longo também piora a resposta. " +
+    "O checkpoint já está gravado: /fechar e depois /clear retomam sem perder o fio."
+  );
 }
 
 function principal() {
@@ -366,9 +518,11 @@ function principal() {
 
   const anterior = lerCache(raiz);
   estado.checkpoint = anterior?.checkpoint ?? null;
+  estado.orcamento = anterior?.orcamento ?? null;
 
   if (modo === "checkpoint") {
-    const resumo = resumoDaTranscricao(entrada);
+    const linhasArquivo = linhasDaTranscricao(entrada);
+    const resumo = resumoDaTranscricao(linhasArquivo);
     estado.checkpoint = {
       quando: new Date().toISOString(),
       branch: estado.branch.nome,
@@ -376,8 +530,16 @@ function principal() {
       pendentes: estado.arquivos.pendentes.length,
       resumo: resumo ?? "(sem resumo da transcrição)",
     };
+    const aviso = avisoDeOrcamento(estado, linhasArquivo, entrada, anterior);
     salvarCache(raiz, estado);
-    return; // Stop/PreCompact não injetam contexto: silêncio é o certo aqui.
+
+    // Stop/PreCompact não injetam contexto: um relatório aqui seria custo puro.
+    // O aviso de orçamento sai por `systemMessage`, que o Claude Code mostra ao
+    // USUÁRIO sem gastar um token de contexto — quem decide fechar é ele. É
+    // também por isso que o texto é imperativo: a regra de "só fato, sem
+    // imperativo" protege o contexto do MODELO, e não vale para o usuário.
+    if (aviso) escrever(JSON.stringify({ systemMessage: aviso }));
+    return;
   }
 
   salvarCache(raiz, estado);

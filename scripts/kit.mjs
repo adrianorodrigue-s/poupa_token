@@ -23,6 +23,10 @@ import { fileURLToPath } from "node:url";
 const DO_KIT = [
   ".claude/hooks/estado.mjs",
   ".claude/hooks/contrato.mjs",
+  ".claude/hooks/custo.mjs",
+  ".claude/hooks/higiene.mjs",
+  ".claude/agents/explorador.md",
+  ".claude/agents/revisor.md",
   ".claude/commands/feature.md",
   ".claude/commands/fechar.md",
   ".claude/commands/quality-check.md",
@@ -47,6 +51,14 @@ const SEMENTES = [
   ["modelo/docs/adr/0010-spec-da-feature-e-o-estado.md", "docs/adr/0010-spec-da-feature-e-o-estado.md"],
   ["modelo/docs/adr/0011-contrato-de-estado-local.md", "docs/adr/0011-contrato-de-estado-local.md"],
   ["modelo/docs/adr/0012-verificacao-em-pull-request.md", "docs/adr/0012-verificacao-em-pull-request.md"],
+  ["modelo/docs/adr/0013-orcamento-de-contexto-avisa-nao-bloqueia.md", "docs/adr/0013-orcamento-de-contexto-avisa-nao-bloqueia.md"],
+  ["modelo/docs/adr/0014-higiene-de-contexto-recusa-leitura-sem-recorte.md", "docs/adr/0014-higiene-de-contexto-recusa-leitura-sem-recorte.md"],
+  ["modelo/docs/adr/0015-indice-de-decisoes-derivado-com-teto.md", "docs/adr/0015-indice-de-decisoes-derivado-com-teto.md"],
+  ["modelo/docs/adr/0016-subagente-le-nunca-escreve.md", "docs/adr/0016-subagente-le-nunca-escreve.md"],
+  ["modelo/docs/adr/0017-recuperacao-semantica-adotada-sob-gate-de-prefixo.md", "docs/adr/0017-recuperacao-semantica-adotada-sob-gate-de-prefixo.md"],
+  ["modelo/docs/adr/0018-sync-compara-a-fiacao-nao-so-os-arquivos.md", "docs/adr/0018-sync-compara-a-fiacao-nao-so-os-arquivos.md"],
+  ["modelo/docs/adr/README.md", "docs/adr/README.md"],
+  ["modelo/docs/adr/TEMPLATE.md", "docs/adr/TEMPLATE.md"],
   ["modelo/.github/workflows/pr.yml", ".github/workflows/pr.yml"],
 ];
 
@@ -89,6 +101,37 @@ function copiar(de, para) {
   copyFileSync(de, para);
 }
 
+// Os eventos de hook que um settings.json declara. O kit entrega os ARQUIVOS de
+// hook (DO_KIT, o sync sobrescreve) mas não o settings.json do projeto — então um
+// projeto instalado numa versão antiga recebe um hook novo em disco e nunca o
+// executa. Falha silenciosa, que é a classe de bug que este kit existe para
+// eliminar. Daí comparar a FIAÇÃO, não só os arquivos. Ver ADR-0018.
+function eventosDeHook(caminho) {
+  try {
+    return Object.keys(JSON.parse(readFileSync(caminho, "utf8")).hooks ?? {});
+  } catch {
+    return null; // ausente ou ilegível
+  }
+}
+
+function fiacaoFaltante(origem) {
+  const declarados = eventosDeHook(join(origem, ".claude", "settings.kit.json")) ?? [];
+  const ligados = eventosDeHook(join(DESTINO, ".claude", "settings.json"));
+  if (ligados === null) return { nunca: true, faltando: declarados };
+  return { nunca: false, faltando: declarados.filter((e) => !ligados.includes(e)) };
+}
+
+// Acrescenta SÓ os eventos ausentes e preserva o resto: o settings.json é do
+// projeto, o kit não reescreve o que já está configurado nele.
+function ligarEventos(origem, eventos) {
+  const destino = join(DESTINO, ".claude", "settings.json");
+  const doKit = JSON.parse(readFileSync(join(origem, ".claude", "settings.kit.json"), "utf8"));
+  const atual = JSON.parse(readFileSync(destino, "utf8"));
+  atual.hooks ??= {};
+  for (const evento of eventos) atual.hooks[evento] = doKit.hooks[evento];
+  writeFileSync(destino, JSON.stringify(atual, null, 2) + "\n", "utf8");
+}
+
 function doctor() {
   const node = process.versions.node.split(".").map(Number);
   const checagens = [
@@ -99,9 +142,36 @@ function doctor() {
     ["husky no destino", existsSync(join(DESTINO, ".husky")), "sem ele o contrato não entra no pre-push", false],
     ["docker", existeComando("docker"), "opcional — Sonar local e banco de dev", false],
     ["gh autenticado", existeComando("gh", ["auth", "status"]), "opcional — sem ele o relatório diz 'CI: indeterminado'", false],
+    // A fiação é o elo fraco da distribuição: hook em disco e não ligado não dá
+    // erro nenhum, só não roda.
+    [
+      "fiação dos hooks completa",
+      (() => {
+        const f = fiacaoFaltante(ORIGEM);
+        return !f.nunca && f.faltando.length === 0;
+      })(),
+      "`kit:sync` liga os eventos que faltarem",
+      false,
+    ],
+    // Com tool search (padrão), a definição de cada ferramenta MCP carrega sob
+    // demanda e não entra no prefixo da sessão — que é relido em TODA requisição
+    // (mediana medida: 41 mil tokens, ~10% de toda a releitura). Ver ADR-0017.
+    [
+      "tool search ligado",
+      process.env.ENABLE_TOOL_SEARCH !== "false" && !process.env.ANTHROPIC_BASE_URL,
+      "sem ele, todo servidor MCP entra inteiro no prefixo de cada sessão",
+      false,
+    ],
   ];
   let bloqueia = false;
-  log(`Destino: ${DESTINO}`);
+  const versaoInstalada = (() => {
+    try {
+      return readFileSync(join(DESTINO, ".claude", "VERSION"), "utf8").trim();
+    } catch {
+      return "(não instalado)";
+    }
+  })();
+  log(`Destino: ${DESTINO}  ·  kit ${versaoInstalada}`);
   log("Pré-requisitos:");
   for (const [nome, ok, detalhe, obrigatorio] of checagens) {
     if (!ok && obrigatorio) bloqueia = true;
@@ -152,11 +222,17 @@ async function instalar() {
     for (const [de, para] of sementesExistentes) log(`  - ${para}  (compare à mão com ${de} do kit)`);
   }
   log("\nAlém disso:");
-  if (ligarHooks) log("  - .claude/settings.json — liga os hooks SessionStart, Stop e PreCompact (hoje inertes em settings.kit.json)");
+  const eventosDoKit = eventosDeHook(join(ORIGEM, ".claude", "settings.kit.json")) ?? [];
+  if (ligarHooks) log(`  - .claude/settings.json — liga os hooks ${eventosDoKit.join(", ")} (hoje inertes em settings.kit.json)`);
   if (!temIgnore) log("  - .gitignore — ignora .claude/.cache/, onde mora o estado derivado");
   if (porPrePush) log("  - .husky/pre-push — roda o contrato de estado antes do push");
-  log("\nOs hooks executam `node .claude/hooks/estado.mjs` a cada sessão do Claude Code:");
-  log("  leem git, specs e (se houver gh) o CI; escrevem só em .claude/.cache/. Nenhuma rede, nenhuma credencial.");
+  log("\nO que passa a rodar sozinho, e o que cada um faz:");
+  log("  estado.mjs  — no início da sessão e a cada parada. Lê git, specs e (se houver gh) o CI;");
+  log("                escreve só em .claude/.cache/. Avisa quando o contexto passa de 200 mil tokens.");
+  log("  higiene.mjs — ANTES de cada Read e de cada Bash. Confere o tamanho do arquivo a ser lido e");
+  log("                RECUSA leitura inteira acima de 40 KB, pedindo grep + leitura por faixa.");
+  log("                Ele PODE BLOQUEAR uma chamada de ferramenta — é o ponto desta autorização.");
+  log("  Nenhum dos dois acessa a rede, lê credencial ou escreve fora de .claude/.cache/.");
 
   if (!(await confirmar("\nAutoriza?"))) {
     log("Nada foi escrito.");
@@ -183,10 +259,10 @@ async function instalar() {
     log("  escrito .husky/pre-push");
   }
 
-  log("\nFaltam três passos manuais (o kit não edita arquivo que é seu):");
+  log("\nFaltam dois passos manuais (o kit não edita arquivo que é seu):");
   log('  1. package.json → "kit:doctor": "node scripts/kit.mjs doctor", "kit:sync": "node scripts/kit.mjs sync"');
   log("  2. eslint.config.mjs → import { regrasDoKit } from './eslint.kit.mjs' e espalhe no defineConfig");
-  log("  3. docs/adr/README.md → some as linhas dos ADRs 0009–0012 ao índice");
+  log("  (o índice de ADR não precisa de passo manual: o hook o deriva dos arquivos — ADR-0015)");
   log("\nDepois: abra o Claude Code no projeto e rode /feature.");
   return 0;
 }
@@ -206,6 +282,14 @@ async function sync() {
   };
   log(`Kit local ${versao(DESTINO)} → origem ${versao(origem)}`);
 
+  const fiacao = fiacaoFaltante(origem);
+  if (fiacao.nunca) {
+    log("\n.claude/settings.json não existe no destino: o kit está em disco e inerte. Rode `instalar`.");
+  } else if (fiacao.faltando.length) {
+    log(`\nFIAÇÃO DEFASADA: o kit declara ${fiacao.faltando.join(", ")} e o settings.json deste projeto não.`);
+    log("  Sem isso o arquivo do hook é atualizado e nunca executa — a pior falha possível, porque é silenciosa.");
+  }
+
   const diferentes = arquivosDoKit(origem).filter((f) => {
     const b = join(DESTINO, f);
     if (!existsSync(b)) return true;
@@ -216,12 +300,17 @@ async function sync() {
     }
   });
 
-  if (!diferentes.length) {
-    log("Nada a atualizar.");
+  const ligarAgora = fiacao.faltando.length > 0 && !fiacao.nunca;
+
+  // Arquivos iguais NÃO quer dizer nada a fazer: a fiação pode estar velha.
+  // Sair aqui deixaria o hook em disco e inerte, que é o bug que a comparação de
+  // fiação existe para pegar.
+  if (!diferentes.length && !ligarAgora) {
+    log("Nada a atualizar: arquivos e fiação já estão na versão da origem.");
     return 0;
   }
 
-  log("\nArquivos do kit que mudaram:");
+  if (diferentes.length) log("\nArquivos do kit que mudaram:");
   for (const f of diferentes) {
     if (!existsSync(join(DESTINO, f))) {
       log(`  - ${f}  (novo)`);
@@ -235,10 +324,18 @@ async function sync() {
       /* diferença encontrada ou git ausente: a lista já basta */
     }
   }
-  log(`\nNão serão tocados (são do projeto): ${SEMENTES.map(([, p]) => p).join(", ")}, .claude/settings.json, docs/features/**/NNNN-*.md`);
+  log(`\nNão serão tocados (são do projeto): ${SEMENTES.map(([, p]) => p).join(", ")}, docs/features/**/NNNN-*.md`);
+  if (ligarAgora) {
+    log(`\nSerão ACRESCENTADOS ao seu .claude/settings.json os eventos: ${fiacao.faltando.join(", ")}.`);
+    log("  O resto do arquivo fica como está — o kit não reescreve o que você configurou.");
+  }
   if (!(await confirmar("\nAplicar?"))) {
     log("Nada foi escrito.");
     return 1;
+  }
+  if (ligarAgora) {
+    ligarEventos(origem, fiacao.faltando);
+    log(`  ligado em .claude/settings.json: ${fiacao.faltando.join(", ")}`);
   }
   for (const f of diferentes) {
     copiar(join(origem, f), join(DESTINO, f));
