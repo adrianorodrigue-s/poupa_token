@@ -31,7 +31,7 @@ diz `CI: indeterminado` e segue.
 ## Instalar
 
 ```bash
-git clone <este-repo> fh-kit-estado
+git clone git@github.com:adrianorodrigue-s/poupa_token.git fh-kit-estado
 node fh-kit-estado/scripts/kit.mjs doctor   --em /caminho/do/projeto   # confere, não escreve
 node fh-kit-estado/scripts/kit.mjs instalar --em /caminho/do/projeto   # mostra tudo e pergunta
 ```
@@ -71,6 +71,109 @@ Três skills disparam sozinhas: `grill-regra-negocio` (antes de escrever em `*.s
 `criar-testes` (depois de implementar) e `documentar-regra-negocio` (quando uma decisão de
 negócio é tomada). `camada-ui`, `camada-db` e `next16` carregam só quando a sessão toca aquela
 camada — é o que mantém o contexto pequeno nas outras.
+
+## Como usar
+
+### A sessão típica
+
+```
+você:  /feature
+```
+
+O kit já sabe onde você parou — o hook injetou o relatório antes da sua primeira mensagem.
+Se havia feature em andamento, ele retoma de onde o **Próximo passo** da spec diz, resume em
+3–5 linhas e continua. Se não havia, ele abre uma: deduz tipo, escopo e ID, cria a branch e a
+spec, e só te pergunta **o que a mudança entrega** (e o peso SemVer, em `feature`/`release`).
+
+Trabalhe normalmente. Durante o caminho, sozinhas: `grill-regra-negocio` para antes de
+escrever regra de negócio e te entrevista; `criar-testes` escreve o teste do que você acabou
+de implementar; `camada-ui`/`camada-db`/`next16` carregam quando você toca aquela camada.
+
+```
+você:  /quality-check      (quando quiser o gate)
+você:  /revisar            (mudança grande ou regra de negócio)
+você:  /fechar             (no fim)
+```
+
+O `/fechar` roda o gate, atualiza a spec (camadas, critérios, status, dívida), ajusta a doc,
+valida o contrato, faz os commits atômicos e te entrega a mensagem de PR pronta. **Ele não dá
+push** — isso é seu.
+
+### Parar no meio e voltar depois
+
+É o caso que o kit existe para resolver. Você pode fechar o terminal, dar `/clear`, trocar de
+máquina ou deixar a sessão morrer:
+
+```
+você:  /clear
+você:  /feature
+```
+
+O hook recalcula tudo do git e lê a spec. Você volta com: qual feature, quais camadas já
+estão de pé, quais faltam, qual era o próximo passo e o que a sessão anterior estava fazendo
+quando parou. Nenhum "me lembra onde a gente estava?" — e nenhuma leitura de código para
+descobrir.
+
+### Primeiro uso num projeto que já está em andamento
+
+O caso normal. Três coisas a saber:
+
+1. **Seu `CLAUDE.md` não é tocado.** O instalador avisa e deixa `modelo/CLAUDE.md` do kit
+   para você comparar. Vale trazer de lá, no mínimo, a seção **"Como uma sessão funciona"** —
+   é ela que ensina o agente a usar `/feature` e `/fechar`.
+2. **Sua branch atual provavelmente não segue `<tipo>/<escopo>-<ID>/<slug>`.** Sem problema:
+   o relatório diz "fora do padrão" e segue. Para ganhar o estado sem renomear nada, crie a
+   spec à mão e aponte-a para a branch que você já está usando:
+
+   ```bash
+   mkdir -p docs/features/api
+   cp docs/features/TEMPLATE.md docs/features/api/0001-minha-feature.md
+   # edite: **Branch:** <o nome exato da sua branch atual>
+   #        **Status:** em-desenvolvimento
+   #        **Próximo passo:** <o que falta agora>
+   ```
+
+   O vínculo é pelo campo `**Branch:**`, não pelo padrão do nome — funciona com qualquer
+   branch. A partir daí `/feature` retoma normalmente.
+3. **Comece pelas camadas que já existem.** Marque no bloco `kit:camadas` o que já está
+   pronto e deixe o resto desmarcado. O contrato só cobra de verdade quando a spec se declara
+   `entregue`.
+
+Os três passos manuais do instalador podem esperar: o `package.json` e o índice de ADR são
+conveniência, e o **`eslint.kit.mjs` é o único que pode dar trabalho** num projeto já
+existente (ele passa a barrar `let`, `any`, `console` e import relativo — se o código atual
+usa muito disso, deixe para depois).
+
+### Quando o contrato reprova
+
+```
+ERRO  [entregue-sem-teste] A spec está marcada como "entregue" com a camada teste desmarcada.
+      → Escreva o teste das camadas tocadas (yarn test:cov) ou volte o status para em-desenvolvimento.
+```
+
+Cada achado vem com o próximo passo. **Erro** reprova o `/fechar` e o `pre-push`; **aviso** é
+julgamento seu — resolve ou explica no resumo. Para ver o estado a qualquer momento, sem
+abrir o Claude Code:
+
+```bash
+node .claude/hooks/estado.mjs estado
+node .claude/hooks/contrato.mjs
+```
+
+Pressa de verdade? `git push --no-verify` passa por cima do contrato. Ele está ali para te
+lembrar, não para te prender.
+
+### O que você escreve, e o que nunca precisa escrever
+
+| Você escreve | O kit calcula |
+|---|---|
+| Por que a feature existe, escopo, critérios de aceite | branch, tipo, escopo, ID |
+| **Próximo passo** (uma linha) | commits desde a base, arquivos tocados |
+| Dívida: o que não foi exercitado, o que ficou duplicado | camadas da arquitetura atingidas |
+| Decisões em aberto | status do CI, cobertura, baseline de teste |
+
+Se você se pegar escrevendo SHA, nome de branch ou número de teste num `.md`, pare — isso é
+o que o hook calcula, e duplicar cria uma segunda versão da verdade que envelhece.
 
 ## Como funciona
 
