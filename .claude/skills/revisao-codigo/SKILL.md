@@ -8,9 +8,9 @@ Revisão em dois eixos do diff entre `HEAD` e um ponto fixo:
 - **Padrões**: o código segue as convenções documentadas deste repo?
 - **Spec**: o código entrega fielmente o que foi pedido?
 
-Os dois eixos rodam como **sub-agentes paralelos**, via Agent tool, para não poluir o contexto
-um do outro. Esta skill só agrega os achados — não lê o diff inteiro você mesmo antes de
-despachar os sub-agentes.
+Os dois eixos rodam como **sub-agentes paralelos** (`subagent_type: "revisor"`), para não
+poluir o contexto um do outro nem o seu. Esta skill só agrega os achados — **não leia o diff**
+você mesmo: o que entra no seu contexto é recobrado em toda requisição seguinte da sessão.
 
 ## 1. Fixe o ponto de comparação
 
@@ -68,36 +68,51 @@ Baseline (cada um: o que é → como ajustar):
 - **Mudança divergente**: um arquivo é editado por mais de uma razão não relacionada no mesmo
   diff.
 
-## 4. Despache os dois sub-agentes em paralelo
+## 4. Capture o diff em arquivo
 
-Dispare os dois `Agent` (subagent_type genérico, com acesso a Bash/Read) na **mesma
-mensagem** — duas chamadas de tool independentes no mesmo turno — para rodarem concorrentes de
-verdade. Nunca peça para um esperar o outro.
+Grave o diff e os commits em disco **com redirecionamento**, para que não passem pelo seu
+contexto. Só o tamanho entra:
 
-Cada sub-agente roda o `git diff`/`git log` **ele mesmo**, via Bash — passe o comando, não o
-diff colado no prompt; colar o diff inteiro aqui desperdiça contexto que o sub-agente consegue
-gerar sozinho.
+```bash
+mkdir -p .claude/.cache
+git diff <ponto>...HEAD > .claude/.cache/revisao.diff
+git log <ponto>..HEAD --oneline > .claude/.cache/revisao.commits
+wc -l .claude/.cache/revisao.diff .claude/.cache/revisao.commits
+```
 
-**Prompt do sub-agente de Padrões** deve incluir: o comando de diff e a lista de commits (para
-ele rodar), as fontes de padrões do passo 3 (conteúdo relevante colado, não só o caminho — o
+`.claude/.cache/` é gitignored (ADR-0009): o diff fica fora do seu contexto e fora do commit.
+
+## 5. Despache os dois sub-agentes em paralelo
+
+Dispare os dois `Agent` com `subagent_type: "revisor"` na **mesma mensagem** — duas chamadas
+de tool independentes no mesmo turno — para rodarem concorrentes de verdade. Nunca peça para um
+esperar o outro.
+
+O `revisor` só tem ferramentas de leitura (`Read`, `Grep`, `Glob`): passe o **caminho** do
+diff, nunca o diff colado. Colar aqui gastaria exatamente o contexto que o subagente existe
+para poupar. Se o diff for grande, o hook de higiene vai recusar a leitura inteira e o revisor
+lerá por faixa — é o comportamento certo.
+
+**Prompt do sub-agente de Padrões** deve incluir: os caminhos de `revisao.diff` e
+`revisao.commits`, as fontes de padrões do passo 3 (conteúdo relevante colado, não só o caminho — o
 sub-agente não tem acesso a nada além do que você passar), e o baseline de smells do passo 3
-colado por inteiro. Instrução: "Rode o comando de diff indicado você mesmo. Reporte, por
+colado por inteiro. Instrução: "Leia o diff do arquivo indicado. Reporte, por
 arquivo/trecho onde fizer sentido: (a) toda violação de um padrão documentado — cite o arquivo
 e a regra; (b) todo smell do baseline que você perceber — nomeie e cite o trecho. Deixe claro
 que (a) pode ser violação dura e (b) é sempre julgamento, e que um padrão documentado do repo
 sempre vence o baseline. Ignore o que a ferramenta já cobre (Prettier, ESLint, tsc — isso já
 roda no `/quality-check`). Máximo 400 palavras, em português."
 
-**Prompt do sub-agente de Spec** deve incluir: o comando de diff e a lista de commits (para ele
-rodar), o caminho ou conteúdo da spec encontrada no passo 2. Instrução: "Rode o comando de diff
-indicado você mesmo. Reporte: (a) o que a spec pediu e não está no diff, ou está parcial; (b)
+**Prompt do sub-agente de Spec** deve incluir: os caminhos de `revisao.diff` e
+`revisao.commits`, o caminho ou conteúdo da spec encontrada no passo 2. Instrução: "Leia o diff do arquivo
+indicado. Reporte: (a) o que a spec pediu e não está no diff, ou está parcial; (b)
 comportamento no diff que não foi pedido (escopo inflado); (c) requisito que parece
 implementado mas a implementação está errada. Cite a linha da spec para cada achado. Máximo 400
 palavras, em português."
 
 Se a spec faltar (passo 2, item 5), não despache este sub-agente.
 
-## 5. Agregue
+## 6. Agregue
 
 Apresente os dois relatórios sob os títulos `## Padrões` e `## Spec`, como vieram (sem
 misturar ou reordenar achados entre os dois eixos — a separação existe justamente para um

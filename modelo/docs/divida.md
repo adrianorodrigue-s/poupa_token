@@ -11,6 +11,10 @@ o `ROADMAP.md`) nem bug reportado — é o que a própria sessão sabe que deixo
 Formato: uma linha por item, mais novo embaixo. Ao resolver, **apague a linha** e deixe o
 commit contar a história.
 
+Duas seções, porque são coisas diferentes: **Dívida** é o que ficou incompleto; **Becos sem
+saída** é o que foi tentado e não funcionou. Decisão que constrange o código futuro não é nem
+uma nem outra — é ADR.
+
 | Data | Feature / spec | Dívida | Como se resolve |
 |---|---|---|---|
 | 2026-10-08 | kit de estado | `.github/workflows/pr.yml` **não exercitado** — nunca rodou num PR real; ADR-0012 está `Proposto` por isso | Abrir o primeiro PR e conferir; aceitar o ADR |
@@ -19,3 +23,18 @@ commit contar a história.
 | 2026-10-08 | kit de estado | O checkpoint (`Stop`/`PreCompact`) lê a última mensagem do assistente da transcrição. Formato interno do Claude Code — pode mudar sem aviso | O código já degrada em silêncio; se parar de funcionar, o relatório dirá "sem resumo da transcrição" |
 | 2026-10-08 | kit de estado | `estado.mjs` e `contrato.mjs` não têm **suíte automatizada** — foram exercitados à mão em repositório sintético (branch com e sem spec, spec entregue sem teste, arquivo novo não rastreado, fora de repo git), e nada impede uma regressão silenciosa | Teste Vitest montando um repo git temporário por caso, como o teste manual fez |
 | 2026-10-08 | kit de estado | `pr.yml` não foi validado por parser de YAML (pyyaml ausente na máquina) | O GitHub valida no primeiro push; ou `yamllint` local |
+
+
+## Becos sem saída
+
+O caminho que se tentou e não deu certo, com o motivo. Não é dívida (não ficou nada pela
+metade) nem ADR (nada foi decidido) — e é o que mais se repete quando não está escrito: o
+`git log` só guarda o que entrou, nunca o que foi tentado e descartado. Sem isto, a próxima
+sessão refaz o mesmo caminho até bater no mesmo muro.
+
+Ao contrário da dívida, **não se apaga ao resolver**: um beco continua sendo beco. Apaga-se
+quando deixa de ser verdade — e aí o motivo vira ADR.
+
+| Data | O que se tentou | Por que não funcionou | O que mudaria isso |
+|---|---|---|---|
+| 2026-10-08 | Prever o tamanho da saída de um comando `Bash` no `PreToolUse` para exigir corte (`\| tail`) | Não é previsível antes de rodar: `yarn test` pode devolver 20 linhas ou 20 mil, e recusar por heurística erraria contra comando legítimo com frequência alta demais | Um modo "dry-run" que devolvesse o tamanho esperado, ou um `PostToolUse` que truncasse a saída antes de ela entrar no contexto |

@@ -201,7 +201,7 @@ O porquê de cada escolha está nos ADRs em `modelo/docs/adr/` (0009 a 0012).
 
 | Caminho | Dono | `sync` sobrescreve? |
 |---|---|---|
-| `.claude/hooks/*.mjs` · `.claude/commands/*` · `.claude/skills/*` | kit | sim |
+| `.claude/hooks/*.mjs` · `.claude/commands/*` · `.claude/skills/*` · `.claude/agents/*` | kit | sim |
 | `.claude/VERSION` · `.claude/settings.kit.json` · `eslint.kit.mjs` · `scripts/kit.mjs` | kit | sim |
 | `docs/features/TEMPLATE.md` | kit | sim |
 | `CLAUDE.md` · `AGENTS.md` · `PROGRESS.md` · `docs/divida.md` · ADRs · `pr.yml` | projeto (semente) | **não** |
@@ -215,8 +215,11 @@ O porquê de cada escolha está nos ADRs em `modelo/docs/adr/` (0009 a 0012).
 yarn kit:sync --de /caminho/do/fh-kit-estado
 ```
 
-Compara `.claude/VERSION`, mostra o diff de cada arquivo do kit e só aplica depois de
-confirmar. Arquivo do projeto não é tocado.
+Compara `.claude/VERSION` **e a fiação dos hooks** — os eventos que o `settings.kit.json` do
+kit declara contra os que o seu `settings.json` liga. Hook novo chega ligado, não só copiado:
+arquivo atualizado em disco e não ligado no `settings.json` é falha silenciosa (ADR-0018).
+Acrescenta só os eventos ausentes e preserva o resto do seu arquivo. Mostra o diff de cada
+arquivo do kit e só aplica depois de confirmar.
 
 ## Diagnóstico
 
@@ -224,8 +227,15 @@ confirmar. Arquivo do projeto não é tocado.
 node .claude/hooks/estado.mjs estado          # o relatório que o hook injeta
 node .claude/hooks/estado.mjs estado --json   # o mesmo, para script
 node .claude/hooks/contrato.mjs               # o contrato, com o próximo passo de cada achado
-node scripts/kit.mjs doctor                   # pré-requisitos
+node .claude/hooks/custo.mjs                  # gasto de token das suas sessões
+node .claude/hooks/custo.mjs --todos --json   # todos os projetos, para script
+node scripts/kit.mjs doctor                   # pré-requisitos, versão e fiação dos hooks
 ```
+
+O `custo.mjs` lê os transcripts do Claude Code (`~/.claude/projects/`), que gravam o `usage`
+cobrado por requisição. Ele não roda por hook: o alarme de orçamento vive no `estado.mjs`, que
+avisa **uma vez por sessão** ao cruzar 200 mil tokens de contexto. O `custo.mjs` é a visão
+retrospectiva — serve para achar para onde o token foi.
 
 Se o relatório não aparece no começo da sessão, os hooks não estão ligados — confira
 `.claude/settings.json`.
@@ -245,6 +255,15 @@ Declarados em `modelo/docs/divida.md` e repetidos aqui porque importam antes de 
 - **A lista das sete camadas vive em dois lugares** (`estado.mjs` e `TEMPLATE.md`).
 - O checkpoint lê a última mensagem do assistente da transcrição do Claude Code — formato
   interno, pode mudar sem aviso (degrada em silêncio).
+- **Os seis mecanismos de contexto (ADRs 0013–0018) nunca rodaram numa sessão real do Claude
+  Code.** Foram exercitados contra transcrições gravadas e num projeto instalado de verdade,
+  mas o caminho stdin→hook ao vivo não foi percorrido.
+- **O limite de 40 KB do `higiene.mjs` foi calibrado em um projeto só** (p50 = 4 KB,
+  p90 = 56 KB). Se recusar leitura legítima, suba por `KIT_LIMITE_LEITURA`.
+- **O benefício de adotar Serena não foi medido** — só o custo, que é baixo. Os "70% menos
+  tokens" são número do projeto Serena, não deste kit.
+- **O `sync` compara a fiação por nome de evento.** Se o kit mudar o *conteúdo* de um evento
+  que o projeto já declara (outro matcher, outro timeout), ele não percebe.
 
 ## Desenvolver o kit
 
