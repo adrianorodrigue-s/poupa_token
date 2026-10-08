@@ -1,0 +1,15 @@
+{
+  "name": "fh-kit-estado",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Memória entre sessões de IA para projetos Next.js — estado derivado do git, contrato de estado e fluxo de 4 comandos",
+  "bin": { "kit-estado": "scripts/kit.mjs" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "doctor": "node scripts/kit.mjs doctor",
+    "instalar": "node scripts/kit.mjs instalar",
+    "sync": "node scripts/kit.mjs sync"
+  },
+  "files": [".claude", "docs", "modelo", "scripts", "eslint.kit.mjs"]
+}
